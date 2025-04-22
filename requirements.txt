@@ -1,0 +1,11 @@
+transformers
+torch
+numpy
+scipy
+datasets
+tokenizers
+tqdm
+laplace-torch
+evaluate
+scikit-learn
+matplotlib
