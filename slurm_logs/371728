@@ -1,0 +1,8 @@
+Current conda environment:
+# conda environments:
+#
+project               *  /home/jdani/.conda/envs/cent7/2024.02-py311/project
+base                     /home/jdani/.local/share/r-miniconda
+r-reticulate             /home/jdani/.local/share/r-miniconda/envs/r-reticulate
+
+

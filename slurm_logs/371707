@@ -1,0 +1,12 @@
+Current conda environment:
+# conda environments:
+#
+base                     /apps/cent7/anaconda/2024.02
+project               *  /home/jdani/.conda/envs/cent7/2024.02-py311/project
+                         /home/jdani/.local/share/r-miniconda
+                         /home/jdani/.local/share/r-miniconda/envs/r-reticulate
+
+
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** STEP 371707.0 ON scholar-g003 CANCELLED AT 2025-04-22T18:42:34 ***
+slurmstepd: error: *** JOB 371707 ON scholar-g003 CANCELLED AT 2025-04-22T18:42:34 ***
