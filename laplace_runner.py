@@ -5,11 +5,11 @@ from typing import Tuple, Dict
 
 def build_laplace(
     model: torch.nn.Module,
-    likelihood: str,
-    subset_of_weights: str,
-    hessian_structure: str,
+    likelihood: str = "classification",
+    subset_of_weights: str = "last_layer",
+    hessian_structure: str = "kron",
     temperature: float = 1.0,
-    feature_reduction: str = "pick_last",
+    feature_reduction: str = None,
     backend=None,
     n_subset: int = None,
 ):
@@ -54,7 +54,7 @@ def laplace_inference(
       labels      : np.ndarray of shape [N, C]  (true multi-hot)
       base_probs  : np.ndarray of shape [N, C]  (sigmoid(logits))
     """
-    all_la_probs, all_labels = [], []
+    all_la_logits, all_labels = [], []
     model.eval()
     with torch.no_grad():
         for batch in dataloader:
@@ -63,12 +63,15 @@ def laplace_inference(
             labels = batch["labels"].float().to(device)
             # Laplace predictive probs (LA)
             la_p = la(batch, pred_type = 'nn', link_approx = 'mc', n_samples=n_samples)                             # [B, C]
+            mean_logits = la_p[0]  # take the predictive mean only
 
-            all_la_probs.append(la_p.cpu().numpy())
+            all_la_logits.append(mean_logits.cpu().numpy())
             all_labels.append(labels.cpu().numpy())
 
-    all_la_probs = np.vstack(all_la_probs)
+    all_la_logits = np.vstack(all_la_logits)
     all_labels   = np.vstack(all_labels)
 
+    # Now apply sigmoid manually to map to probabilities
+    all_la_probs = torch.sigmoid(torch.tensor(all_la_logits)).numpy()
 
     return all_la_probs, all_labels

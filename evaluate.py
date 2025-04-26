@@ -17,7 +17,6 @@ from metrics import (
 
 def collect_outputs(
     model: torch.nn.Module,
-    la: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,
     device: torch.device
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
