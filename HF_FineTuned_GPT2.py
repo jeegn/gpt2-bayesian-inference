@@ -41,4 +41,5 @@ class MyGPT2(nn.Module):
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
+        
         return outputs.logits

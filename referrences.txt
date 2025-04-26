@@ -1,0 +1,5 @@
+- Try out different modes in Laplac Redux
+- Then try out Variational Bayes and HMC if time permits
+
+371965 - Full Hessian Run
+371869 - Kron Hessian Run

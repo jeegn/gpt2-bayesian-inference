@@ -31,45 +31,73 @@ from transformers import ( # noqa: E402
     GPT2Tokenizer,
     DataCollatorWithPadding,
     PreTrainedTokenizer,
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    AutoConfig,
 )
 
+from huggingface_hub import Repository # noqa: E402
 # from peft import LoraConfig, get_peft_model # noqa: E402
 from datasets import Dataset, load_dataset, load_from_disk # noqa: E402
 import os
-
+import shutil
+import tempfile
 
 torch.manual_seed(8)
 np.random.seed(8)
-
 device = "cuda" if torch.cuda.is_available() else "cpu"
+if device == "cuda":
+    print("CUDA current device:", torch.cuda.current_device(),
+      torch.cuda.get_device_name(torch.cuda.current_device()))
+    
 num_labels = 28
 print(f"Number of labels: {num_labels}")
 
 DATA_CACHE = "/scratch/scholar/jdani/project/data_cache"
-MODEL_CACHE = "/scratch/scholar/jdani/project/model_cache"
+MODEL_CACHE = "/scratch/scholar/jdani/project/scratch_model"
 
+PREFERRED_SUBFOLDER = "ood-epochs-10-ense-5"
+HUGGINGFACE_REPO = "sawlachintan/gpt2-goemotions-ft"
+
+def clone_and_prepare_model():
+    tmp_dir = tempfile.mkdtemp()
+    print(f"Cloning {HUGGINGFACE_REPO} into temp dir {tmp_dir}")
+    repo = Repository(local_dir=tmp_dir, clone_from=HUGGINGFACE_REPO, use_auth_token=True)
+
+    src = os.path.join(tmp_dir, PREFERRED_SUBFOLDER)
+    dst = MODEL_CACHE
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+    shutil.rmtree(tmp_dir)
+    print(f"Model copied to {dst}")
 
 # Load the tokenizer and model
 if os.path.isdir(MODEL_CACHE):
-    # load from local folder only
-    tokenizer = GPT2Tokenizer.from_pretrained(MODEL_CACHE, local_files_only=True)
-    model     = GPT2ForSequenceClassification.from_pretrained(MODEL_CACHE, local_files_only=True)
-    print("Loaded model from local cache")
+    print("Loading model from local cache...")
 else:
-    # first time: download from HF, then save locally
-    model_name = "tingtone/go_emo_gpt"
-    tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-    model     = GPT2ForSequenceClassification.from_pretrained(model_name)
-    # Print the number of parameters in the model
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total parameters: {total_params}")
-    print(f"Trainable parameters: {trainable_params}")
-    tokenizer.save_pretrained(MODEL_CACHE)
-    model.save_pretrained(MODEL_CACHE)
+    print("Local model cache not found. Downloading model...")
+    clone_and_prepare_model()
 
+tokenizer = AutoTokenizer.from_pretrained(MODEL_CACHE)
+
+# config = AutoConfig.from_pretrained(MODEL_CACHE)
+config = AutoConfig.from_pretrained(
+    "gpt2",
+    num_labels=28,
+    finetuning_task="multi_label_classification",
+    pad_token_id=tokenizer.eos_token_id
+)
+
+pretrained_model = AutoModelForSequenceClassification.from_pretrained(
+    MODEL_CACHE,
+    config=config
+)
+
+# Set pad token
 tokenizer.pad_token_id = tokenizer.eos_token_id
-
+# exit(1)
 if os.path.isdir(DATA_CACHE):
     # 1) Load the tokenized dataset from disk
     tokenized_ds = load_from_disk(DATA_CACHE)
@@ -88,7 +116,7 @@ else:
         mh = np.zeros((len(batch["labels"]), num_labels), dtype=np.float32)
         for i, labs in enumerate(batch["labels"]):
             mh[i, labs] = 1.0
-        toks["label"] = mh.tolist()
+        toks["labels"] = mh.tolist()
         return toks
 
     # apply to *all* splits
@@ -102,7 +130,7 @@ else:
     for split in tokenized_ds:
         tokenized_ds[split].set_format(
             type="torch",
-            columns=["input_ids", "attention_mask", "label"]
+            columns=["input_ids", "attention_mask", "labels"]
         )
 
     # 3) Persist it
@@ -111,10 +139,24 @@ else:
 test_dataset  = tokenized_ds["test"]
 train_dataset = tokenized_ds["train"]
 # Subsample just 10 samples from train_dataset
-train_dataset = train_dataset.select(range(10))
+train_dataset = train_dataset.select(range(len(train_dataset)))
+print(f"Number of samples in the train dataset: {len(train_dataset)}")
 # val_dataset = dataset["validation"]
 
-collator = DataCollatorWithPadding(tokenizer)
+from torch.utils.data import DataLoader
+from transformers import DataCollatorWithPadding
+
+class CustomCollator:
+    def __init__(self, tokenizer):
+        self.base_collator = DataCollatorWithPadding(tokenizer)
+
+    def __call__(self, batch):
+        batch = self.base_collator(batch)
+        if 'labels' in batch:
+            batch['labels'] = batch['labels'].float()
+        return batch
+collator = CustomCollator(tokenizer)
+# collator = DataCollatorWithPadding(tokenizer)
 
 
 train_dataloader = data_utils.DataLoader(
@@ -131,22 +173,53 @@ test_dataloader = data_utils.DataLoader(
 # Define the model
 model = MyGPT2(
     tokenizer=tokenizer,
-    model=model
+    model=pretrained_model
 )
-# exit(1)
+model = model.to(device)
 model.eval()
+print("Model is on:", next(model.parameters()).device)
+
+# assume `model` is your MyGPT2 wrapper, already moved to device
+# print("=== Full model architecture ===")
+# print(model.hf_model)
+# for p in model.hf_model.parameters():
+#     p.requires_grad = False
+
+# for p in model.hf_model.score.parameters():
+#     p.requires_grad = True
+
+# for p in model.hf_model.transformer.ln_f.parameters():
+#     p.requires_grad = True
+
+# Count total vs trainable
+total_params     = sum(p.numel() for p in model.hf_model.parameters())
+trainable_params = sum(p.numel() for p in model.hf_model.parameters() if p.requires_grad)
+
+print(f"Total params:     {total_params}")
+print(f"Trainable params: {trainable_params}")
+print(f"Trainable %:      {100*trainable_params/total_params:.2f}%")
 # exit(1)
+# exit(1)
+
+# Options for hessian structure:
+# 'diag', 'kron', 'full', 'lowrank', 'gp'
+# Options for subset of weights:
+# 'all', 'last_layer', 'subnetwork'
+# n_subset = x limits using only x training examples
+
 la = Laplace(
     model,
     likelihood="classification",
     subset_of_weights="last_layer",
-    hessian_structure="diag",
+    hessian_structure="kron",
     # This must reflect faithfully the reduction technique used in the model
     # Otherwise, correctness is not guaranteed
     feature_reduction="pick_last",
+
 )
-la.fit(train_loader=train_dataloader, progress_bar=True)
-# la.optimize_prior_precision()
+la.fit(train_loader=train_dataloader)
+la.optimize_prior_precision()
+
 print("Laplace model fitted")
 
 all_logits = []
@@ -158,12 +231,12 @@ for batch in tqdm(test_dataloader, desc="Evaluating"):
     data = {k: v.to(device) for k, v in batch.items()}
     # input_ids      = batch["input_ids"].to(device)
     # attention_mask = batch["attention_mask"].to(device)
-    labels         = batch["labels"].to(device)
+    labels = batch["labels"]
     labels = labels.float()
     with torch.no_grad():
         logits = model(data)
         # loss   = loss_fn(logits, labels)
-    la_pred = la(batch)
+    la_pred = la(batch, pred_type="nn", link_approx='mc', n_samples=2000)
 
     # total_loss += loss.item()
     all_logits.append(logits.cpu().numpy())
@@ -211,7 +284,5 @@ ece_cls_la, ece_glob_la, mce_glob_la = get_calibration(all_la_preds, all_labels)
 print(f"Global ECE            : {ece_glob_la:.4f}")
 print(f"Global MCE            : {mce_glob_la:.4f}")
 print(f"Per‑class ECE         : {ece_cls_la}")
-
-
 
 

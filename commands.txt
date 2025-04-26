@@ -1,0 +1,20 @@
+# Laplace Redux Experiments
+
+1. diagonal Hessian matrix, subset_of_weights last_layer
+
+sbatch slurm.sh python run_laplace.py \
+  --model-cache /scratch/scholar/jdani/project/model_cache \
+  --data-cache  /scratch/scholar/jdani/project/data_cache \
+  --hessian-structure diag \
+  --subset-of-weights last_layer \
+  --batch-size 32 \
+  --temperature 0.5
+
+sbatch slurm.sh python run_laplace.py \
+  --model-cache /scratch/scholar/jdani/project/model_cache \
+  --data-cache  /scratch/scholar/jdani/project/data_cache \
+  --hessian-structure kron \
+  --subset-of-weights last_layer \
+  --batch-size 32 \
+  --temperature 0.5
+

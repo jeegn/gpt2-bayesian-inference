@@ -24,7 +24,8 @@ def subset_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     Exact-match (subset) accuracy: fraction of samples
     where *all* labels are predicted correctly.
     """
-    return np.mean(np.all(y_true == y_pred, axis=1))
+    # return np.mean(np.all(y_true == y_pred, axis=1))
+    return sk_accuracy(y_true, y_pred)
 
 
 def hamming_loss(y_true: np.ndarray, y_pred: np.ndarray) -> float:
