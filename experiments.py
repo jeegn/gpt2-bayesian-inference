@@ -6,7 +6,7 @@ import numpy as np
 import torch.nn.functional as F
 import pandas as pd
 
-from dataset_utils import get_tokenized_dataset, get_dataloader
+from dataset_utils import get_goEmo_dataset, get_emoint_dataset, get_dataloader, map_preds_to_ood, map_probs_to_ood
 from model_utils import load_tokenizer_and_model, build_wrapped_model, count_parameters, freeze_backbone
 from evaluate import compute_all_metrics, collect_outputs
 
@@ -22,14 +22,15 @@ warnings.filterwarnings("ignore")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-cache",      default="/scratch/scholar/jdani/project/model_cache")
-    parser.add_argument("--data-cache",       default="/scratch/scholar/jdani/project/data_cache")
-    parser.add_argument("--model-name",       default="tingtone/go_emo_gpt")
-    parser.add_argument("--batch-size",       type=int, default=64)
-    parser.add_argument("--device",           default="cuda")
-    parser.add_argument("--n-ensemble",       type=int, default=5)
-    parser.add_argument("--n-samples",        type=int, default=2000) # for Laplace MC Integration
-    parser.add_argument("--methods",          nargs="+", default=["normal", "laplace", "mcdropout", "sghmc", "ensemble", "tempscaling"], help="Which inference methods to run")
+    parser.add_argument("--model-cache", default="/scratch/scholar/jdani/project/model_cache")
+    parser.add_argument("--data-cache", default="/scratch/scholar/jdani/project/data_cache")
+    parser.add_argument("--model-name", default="tingtone/go_emo_gpt")
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--n-ensemble", type=int, default=5)
+    parser.add_argument("--n-samples", type=int, default=2000) # for Laplace MC Integration
+    parser.add_argument("--methods", nargs="+", default=["normal", "laplace", "mcdropout", "sghmc", "ensemble", "tempscaling"], help="Which inference methods to run")
+    parser.add_argument("--ood", action="store_true", help="Evaluate on OOD EmoInt")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -45,12 +46,20 @@ def main():
     print(f"Total params: {total:,}, Trainable: {trainable:,} ({100*trainable/total:.2f}%)")
 
     # 2) Load dataset
-    ds = get_tokenized_dataset(tokenizer, args.data_cache, num_labels=28)
-    test_loader = get_dataloader(ds["test"], tokenizer, args.batch_size)
+    ds = get_goEmo_dataset(tokenizer, args.data_cache, num_labels=28)
     train_loader = get_dataloader(ds["train"], tokenizer, args.batch_size)
     val_loader = get_dataloader(ds["validation"], tokenizer, args.batch_size)
     
+    # 3) Load OOD dataset if specified for testing
+    if args.ood:
+        ood_data_cache = "/scratch/scholar/jdani/project/ood_data_cache"
+        ds = get_emoint_dataset(tokenizer, ood_data_cache)
+        test_loader = get_dataloader(ds, tokenizer, args.batch_size)
+    else:
+        test_loader = get_dataloader(ds["test"], tokenizer, args.batch_size)
+    # Print one sample from the test_loader
 
+    # 4) Load thresholds finetuned based on the support of the training set
     thresholds_df = pd.read_csv("thresholds.csv")
     thresholds_list = thresholds_df["threshold"].tolist()
     thresholds_tensor = torch.tensor(thresholds_list, dtype=torch.float32).to(device)
@@ -61,10 +70,16 @@ def main():
     # === 1. Normal Deterministic Inference ===
     if "normal" in methods:
         start = time.time()
+
         base_logits, base_probs, labels = collect_outputs(model, test_loader, device)
+
         normal_time = time.time() - start
-        # base_preds = (base_probs >= 0.5).astype(int)
-        base_preds = (base_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        if args.ood:
+            base_probs = map_probs_to_ood(base_probs)
+            base_preds = (base_probs >= 0.5).astype(int)
+        else:
+            base_preds = (base_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        
         base_metrics = compute_all_metrics(base_probs, base_preds, labels)
         times["Normal"] = normal_time
         metrics["Normal"] = base_metrics
@@ -85,8 +100,12 @@ def main():
         start = time.time()
         la_probs, labels = laplace_inference(model, la, test_loader, device, n_samples=args.n_samples)
         laplace_time = time.time() - start
-        # la_preds = (la_probs >= 0.5).astype(int)
-        la_preds = (la_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        if args.ood:
+            la_probs = map_probs_to_ood(la_probs)
+            la_preds = (la_probs >= 0.5).astype(int)
+        else:
+            la_preds = (la_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        
         laplace_metrics = compute_all_metrics(la_probs, la_preds, labels)
         times["Laplace"] = laplace_time
         metrics["Laplace"] = laplace_metrics
@@ -98,8 +117,12 @@ def main():
         dropout_logits = mc_dropout_inference(model, test_loader, device, n_forward_passes=50)
         dropout_time = time.time() - start
         dropout_probs = torch.sigmoid(torch.tensor(dropout_logits)).numpy()
-        # dropout_preds = (dropout_probs >= 0.5).astype(int)
-        dropout_preds = (dropout_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        if args.ood:
+            dropout_probs = map_probs_to_ood(dropout_probs)
+            dropout_preds = (dropout_probs >= 0.5).astype(int)
+        else:
+            dropout_preds = (dropout_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        
         dropout_metrics = compute_all_metrics(dropout_probs, dropout_preds, labels)
         times["MC Dropout"] = dropout_time
         metrics["MC Dropout"] = dropout_metrics
@@ -117,8 +140,12 @@ def main():
         )
         sghmc_time = time.time() - start
         sghmc_probs = torch.sigmoid(torch.tensor(sghmc_logits)).numpy()
-        # sghmc_preds = (sghmc_probs >= 0.5).astype(int)
-        sghmc_preds = (sghmc_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        if args.ood:
+            sghmc_probs = map_probs_to_ood(sghmc_probs)
+            sghmc_preds = (sghmc_probs >= 0.5).astype(int)
+        else:
+            sghmc_preds = (sghmc_probs >= thresholds_tensor.cpu().numpy()).astype(int)
+        
         sghmc_metrics = compute_all_metrics(sghmc_probs, sghmc_preds, labels)
         times["SGHMC"] = sghmc_time
         metrics["SGHMC"] = sghmc_metrics
@@ -137,7 +164,11 @@ def main():
         )
         ensemble_time = time.time() - start
         ensemble_probs = torch.sigmoid(torch.tensor(ensemble_logits)).numpy()
-        ensemble_preds = (ensemble_probs >= 0.5).astype(int)
+        if args.ood:
+            ensemble_probs = map_probs_to_ood(ensemble_probs)
+            ensemble_preds = (ensemble_probs >= 0.5).astype(int)
+        else:
+            ensemble_preds = (ensemble_probs >= 0.5).astype(int)
         # ensemble_preds = (ensemble_probs >= thresholds_tensor.cpu().numpy()).astype(int)
         ensemble_metrics = compute_all_metrics(ensemble_probs, ensemble_preds, labels)
         times["Deep Ensemble"] = ensemble_time
@@ -151,7 +182,12 @@ def main():
         temp_scaled_model.set_temperature(val_loader, device)
         logits, base_probs, labels = collect_outputs(temp_scaled_model, test_loader, device)
         temp_time = time.time() - start
-        base_preds = (base_probs >= 0.5).astype(int)
+        if args.ood:
+            base_probs = map_probs_to_ood(base_probs)
+            base_preds = (base_probs >= 0.5).astype(int)
+        else:
+            # base_preds = (base_probs >= 0.5).astype(int)
+            base_preds = (base_probs >= thresholds_tensor.cpu().numpy()).astype(int)
         temp_metrics = compute_all_metrics(base_probs, base_preds, labels)
         times["Temperature Scaling"] = temp_time
         metrics["Temperature Scaling"] = temp_metrics
