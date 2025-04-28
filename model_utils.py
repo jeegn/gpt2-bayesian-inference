@@ -35,5 +35,5 @@ def freeze_backbone(model):
         param.requires_grad = False
     for param in model.hf_model.score.parameters():
         param.requires_grad = True
-
+   
 

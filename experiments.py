@@ -9,6 +9,7 @@ import pandas as pd
 from dataset_utils import get_goEmo_dataset, get_emoint_dataset, get_dataloader, map_preds_to_ood, map_probs_to_ood
 from model_utils import load_tokenizer_and_model, build_wrapped_model, count_parameters, freeze_backbone
 from evaluate import compute_all_metrics, collect_outputs
+from visualization import plot_inference_results
 
 from sghmc_runner import sghmc_sampler, predict_sghmc   
 from laplace_runner import laplace_inference, build_laplace, fit_laplace
@@ -81,8 +82,8 @@ def main():
             base_preds = (base_probs >= thresholds_tensor.cpu().numpy()).astype(int)
         
         base_metrics = compute_all_metrics(base_probs, base_preds, labels)
-        times["Normal"] = normal_time
-        metrics["Normal"] = base_metrics
+        times["MAP"] = normal_time
+        metrics["MAP"] = base_metrics
         print("\nDeterministic Inference Done.")
 
     # === 2. Laplace Approximation Inference ===
@@ -91,8 +92,8 @@ def main():
             model,
             likelihood="regression",
             subset_of_weights="last_layer",
-            hessian_structure="diag",
-            temperature=1.0819,
+            hessian_structure="full",
+            temperature=2.0819,
             feature_reduction="pick_last"
         )
         la = fit_laplace(la, train_loader, val_loader, optimize_prior=True)
@@ -107,8 +108,8 @@ def main():
             la_preds = (la_probs >= thresholds_tensor.cpu().numpy()).astype(int)
         
         laplace_metrics = compute_all_metrics(la_probs, la_preds, labels)
-        times["Laplace"] = laplace_time
-        metrics["Laplace"] = laplace_metrics
+        times["Laplace Approx"] = laplace_time
+        metrics["Laplace Approx"] = laplace_metrics
         print("\nLaplace Inference Done.")
 
     # === 3. MC Dropout Inference ===
@@ -204,6 +205,7 @@ def main():
         for k, v in mets.items():
             print(f"{k:20s}: {v:.4f}")
 
+    plot_inference_results(metrics, times)
 
 if __name__ == "__main__":
     main()
